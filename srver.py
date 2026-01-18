@@ -1,49 +1,42 @@
-import os
-import json
-from datetime import datetime
-from flask import Flask, render_template, request, jsonify, session, send_from_directory
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+import json
+import os
 
-app = Flask(__name__, template_folder='.', static_folder='.')
-app.config['SECRET_KEY'] = 'deeplink-ultra-secret-key-2024-final'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///deeplink.db'
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///messenger.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['PERMANENT_SESSION_LIFETIME'] = 86400 * 365  # 1 год
-app.config['SESSION_COOKIE_SECURE'] = False
-app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 db = SQLAlchemy(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Модели
+# Модели базы данных
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, nullable=False)
+    username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(200), nullable=False)
-    avatar = db.Column(db.Text, default='https://api.dicebear.com/7.x/avataaars/svg?seed={username}&background=000&color=fff')
-    bio = db.Column(db.String(200), default='')
-    theme = db.Column(db.String(20), default='cyberpunk')
-    status = db.Column(db.String(20), default='offline')
-    last_seen = db.Column(db.DateTime)
+    nickname = db.Column(db.String(80), nullable=False)
+    avatar = db.Column(db.String(200), default='default_avatar.png')
+    status = db.Column(db.String(100), default='В сети')
+    last_seen = db.Column(db.DateTime, default=datetime.utcnow)
+    privacy = db.Column(db.String(20), default='public')  # public/private
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
+    is_online = db.Column(db.Boolean, default=False)
+    
 class Chat(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100))
-    chat_type = db.Column(db.String(20), default='private')
-    avatar = db.Column(db.Text)
-    description = db.Column(db.String(500))
-    created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    is_group = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
+    
 class ChatMember(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     chat_id = db.Column(db.Integer, db.ForeignKey('chat.id'))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    role = db.Column(db.String(20), default='member')
     joined_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Message(db.Model):
@@ -51,671 +44,314 @@ class Message(db.Model):
     chat_id = db.Column(db.Integer, db.ForeignKey('chat.id'))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     content = db.Column(db.Text, nullable=False)
-    message_type = db.Column(db.String(20), default='text')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    is_deleted = db.Column(db.Boolean, default=False)
-    deleted_at = db.Column(db.DateTime)
-
-class UserTyping(db.Model):
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    is_read = db.Column(db.Boolean, default=False)
+    
+class TypingIndicator(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     chat_id = db.Column(db.Integer, db.ForeignKey('chat.id'))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     is_typing = db.Column(db.Boolean, default=False)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-class UserSettings(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), unique=True)
-    notifications = db.Column(db.Boolean, default=True)
-    sounds = db.Column(db.Boolean, default=True)
-    auto_download = db.Column(db.Boolean, default=True)
-    privacy = db.Column(db.String(20), default='everyone')
-    theme_mode = db.Column(db.String(20), default='dark')
-    message_sound = db.Column(db.String(50), default='default')
-    font_size = db.Column(db.Integer, default=16)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # Создаем таблицы
 with app.app_context():
     db.create_all()
 
-# Роуты
+# Хранилище для typing indicators в памяти
+typing_users = {}
+
+# Маршруты
 @app.route('/')
 def index():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
     return render_template('index.html')
 
-@app.route('/favicon.ico')
-def favicon():
-    return send_from_directory('.', 'favicon.ico')
-
-# API
-@app.route('/api/check_auth')
-def check_auth():
-    """Проверка авторизации - вызывается при каждой загрузке"""
-    user_id = session.get('user_id')
-    
-    if user_id:
-        user = User.query.get(user_id)
-        if user:
-            user.status = 'online'
-            db.session.commit()
-            
-            settings = UserSettings.query.filter_by(user_id=user_id).first()
-            if not settings:
-                settings = UserSettings(user_id=user_id)
-                db.session.add(settings)
-                db.session.commit()
-            
-            return jsonify({
-                'success': True,
-                'authenticated': True,
-                'user': {
-                    'id': user.id,
-                    'username': user.username,
-                    'avatar': user.avatar,
-                    'bio': user.bio,
-                    'theme': user.theme,
-                    'status': user.status,
-                    'last_seen': user.last_seen.isoformat() if user.last_seen else None
-                },
-                'settings': {
-                    'notifications': settings.notifications,
-                    'sounds': settings.sounds,
-                    'auto_download': settings.auto_download,
-                    'privacy': settings.privacy,
-                    'theme_mode': settings.theme_mode,
-                    'message_sound': settings.message_sound,
-                    'font_size': settings.font_size
-                }
-            })
-    
-    return jsonify({'success': True, 'authenticated': False})
-
-@app.route('/api/register', methods=['POST'])
-def register():
-    try:
-        data = request.json
-        username = data.get('username', '').strip()
-        password = data.get('password', '').strip()
-        
-        if not username or not password:
-            return jsonify({'success': False, 'error': 'Заполните все поля'})
-        
-        if len(username) < 3:
-            return jsonify({'success': False, 'error': 'Имя должно быть минимум 3 символа'})
-        
-        if len(password) < 6:
-            return jsonify({'success': False, 'error': 'Пароль должен быть минимум 6 символов'})
-        
-        if User.query.filter_by(username=username).first():
-            return jsonify({'success': False, 'error': 'Имя уже занято'})
-        
-        user = User(
-            username=username,
-            password_hash=generate_password_hash(password),
-            avatar=f'https://api.dicebear.com/7.x/avataaars/svg?seed={username}&background=000&color=fff',
-            bio='',
-            theme='cyberpunk',
-            status='online'
-        )
-        
-        db.session.add(user)
-        db.session.flush()
-        
-        settings = UserSettings(user_id=user.id)
-        db.session.add(settings)
-        db.session.commit()
-        
-        # Создаем сессию
-        session['user_id'] = user.id
-        session.permanent = True
-        
-        return jsonify({
-            'success': True,
-            'user': {
-                'id': user.id,
-                'username': user.username,
-                'avatar': user.avatar,
-                'bio': user.bio,
-                'theme': user.theme,
-                'status': user.status
-            }
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': 'Ошибка сервера'})
-
-@app.route('/api/login', methods=['POST'])
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    try:
-        data = request.json
-        username = data.get('username', '').strip()
-        password = data.get('password', '').strip()
+    if request.method == 'POST':
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
         
         user = User.query.filter_by(username=username).first()
-        if not user or not check_password_hash(user.password_hash, password):
-            return jsonify({'success': False, 'error': 'Неверный логин или пароль'})
         
-        user.status = 'online'
-        user.last_seen = datetime.utcnow()
-        db.session.commit()
-        
-        # Сохраняем сессию
-        session['user_id'] = user.id
-        session.permanent = True
-        
-        settings = UserSettings.query.filter_by(user_id=user.id).first()
-        if not settings:
-            settings = UserSettings(user_id=user.id)
-            db.session.add(settings)
+        if user and check_password_hash(user.password_hash, password):
+            session['user_id'] = user.id
+            user.is_online = True
             db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'user': {
+            return jsonify({'success': True, 'user': {
                 'id': user.id,
                 'username': user.username,
-                'avatar': user.avatar,
-                'bio': user.bio,
-                'theme': user.theme,
-                'status': user.status,
-                'last_seen': user.last_seen.isoformat()
-            },
-            'settings': {
-                'notifications': settings.notifications,
-                'sounds': settings.sounds,
-                'auto_download': settings.auto_download,
-                'privacy': settings.privacy,
-                'theme_mode': settings.theme_mode,
-                'message_sound': settings.message_sound,
-                'font_size': settings.font_size
-            }
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': 'Ошибка сервера'})
-
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    user_id = session.get('user_id')
-    if user_id:
-        user = User.query.get(user_id)
-        if user:
-            user.status = 'offline'
-            user.last_seen = datetime.utcnow()
-            db.session.commit()
+                'nickname': user.nickname,
+                'avatar': user.avatar
+            }})
+        
+        return jsonify({'success': False, 'error': 'Неверный логин или пароль'})
     
-    session.clear()
+    return render_template('login.html')
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    nickname = data.get('nickname')
+    
+    if User.query.filter_by(username=username).first():
+        return jsonify({'success': False, 'error': 'Имя пользователя уже занято'})
+    
+    if password == username:
+        return jsonify({'success': False, 'error': 'Пароль не может совпадать с именем пользователя'})
+    
+    if User.query.filter_by(nickname=nickname).first():
+        return jsonify({'success': False, 'error': 'Такой никнейм уже существует'})
+    
+    user = User(
+        username=username,
+        password_hash=generate_password_hash(password),
+        nickname=nickname
+    )
+    
+    db.session.add(user)
+    db.session.commit()
+    
     return jsonify({'success': True})
 
-@app.route('/api/user/update', methods=['POST'])
-def update_user():
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({'success': False, 'error': 'Не авторизован'})
-    
-    try:
-        data = request.json
+@app.route('/logout')
+def logout():
+    if 'user_id' in session:
+        user_id = session['user_id']
         user = User.query.get(user_id)
-        
-        if 'username' in data:
-            new_username = data['username'].strip()
-            if new_username and new_username != user.username:
-                if len(new_username) < 3:
-                    return jsonify({'success': False, 'error': 'Имя должно быть минимум 3 символа'})
-                
-                if User.query.filter_by(username=new_username).first():
-                    return jsonify({'success': False, 'error': 'Имя уже занято'})
-                user.username = new_username
-        
-        if 'bio' in data:
-            user.bio = data['bio'].strip()
-        
-        if 'avatar' in data:
-            user.avatar = data['avatar']
-        
-        if 'theme' in data:
-            user.theme = data['theme']
-        
-        db.session.commit()
-        
-        socketio.emit('user_updated', {
-            'user_id': user.id,
-            'username': user.username,
-            'avatar': user.avatar,
-            'bio': user.bio,
-            'theme': user.theme
-        }, broadcast=True)
-        
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        if user:
+            user.is_online = False
+            user.last_seen = datetime.utcnow()
+            db.session.commit()
+        session.clear()
+    return redirect(url_for('login'))
 
-@app.route('/api/settings/update', methods=['POST'])
-def update_settings():
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({'success': False, 'error': 'Не авторизован'})
+@app.route('/api/user')
+def get_user():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
     
-    try:
-        data = request.json
-        settings = UserSettings.query.filter_by(user_id=user_id).first()
-        
-        if not settings:
-            settings = UserSettings(user_id=user_id)
-            db.session.add(settings)
-        
-        if 'notifications' in data:
-            settings.notifications = bool(data['notifications'])
-        
-        if 'sounds' in data:
-            settings.sounds = bool(data['sounds'])
-        
-        if 'auto_download' in data:
-            settings.auto_download = bool(data['auto_download'])
-        
-        if 'privacy' in data:
-            if data['privacy'] in ['everyone', 'contacts', 'nobody']:
-                settings.privacy = data['privacy']
-        
-        if 'theme_mode' in data:
-            if data['theme_mode'] in ['auto', 'dark', 'light']:
-                settings.theme_mode = data['theme_mode']
-        
-        if 'message_sound' in data:
-            settings.message_sound = data['message_sound']
-        
-        if 'font_size' in data:
-            size = int(data['font_size'])
-            if 12 <= size <= 24:
-                settings.font_size = size
-        
-        settings.updated_at = datetime.utcnow()
-        db.session.commit()
-        
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/api/user/<int:user_id>')
-def get_user(user_id):
-    current_user_id = session.get('user_id')
-    if not current_user_id:
-        return jsonify({'success': False, 'error': 'Не авторизован'})
-    
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'success': False, 'error': 'Пользователь не найден'})
-    
+    user = User.query.get(session['user_id'])
     return jsonify({
-        'success': True,
-        'user': {
-            'id': user.id,
-            'username': user.username,
-            'avatar': user.avatar,
-            'bio': user.bio,
-            'theme': user.theme,
-            'status': user.status,
-            'last_seen': user.last_seen.isoformat() if user.last_seen else None
-        }
+        'id': user.id,
+        'username': user.username,
+        'nickname': user.nickname,
+        'avatar': user.avatar,
+        'status': user.status,
+        'privacy': user.privacy
     })
 
-@app.route('/api/users/search')
+@app.route('/api/search')
 def search_users():
-    query = request.args.get('q', '').strip()
-    user_id = session.get('user_id')
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
     
-    if not user_id:
-        return jsonify({'success': False, 'error': 'Не авторизован'})
-    
-    if len(query) < 1:
-        return jsonify([])
-    
+    query = request.args.get('q', '')
     users = User.query.filter(
-        User.username.ilike(f'%{query}%'),
-        User.id != user_id
+        (User.username.contains(query)) | (User.nickname.contains(query))
     ).limit(20).all()
     
-    return jsonify([{
-        'id': u.id,
-        'username': u.username,
-        'avatar': u.avatar,
-        'bio': u.bio,
-        'status': u.status
-    } for u in users])
+    result = []
+    for user in users:
+        if user.id != session['user_id']:
+            result.append({
+                'id': user.id,
+                'username': user.username,
+                'nickname': user.nickname,
+                'avatar': user.avatar,
+                'status': user.status,
+                'is_online': user.is_online
+            })
+    
+    return jsonify(result)
 
 @app.route('/api/chats')
 def get_chats():
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({'success': False, 'error': 'Не авторизован'})
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
     
-    member_chats = ChatMember.query.filter_by(user_id=user_id).all()
-    chat_ids = [mc.chat_id for mc in member_chats]
+    user_id = session['user_id']
+    chats = Chat.query.join(ChatMember).filter(ChatMember.user_id == user_id).all()
     
-    chats = []
-    for chat_id in chat_ids:
-        chat = Chat.query.get(chat_id)
-        if not chat:
-            continue
+    result = []
+    for chat in chats:
+        last_message = Message.query.filter_by(chat_id=chat.id).order_by(Message.timestamp.desc()).first()
+        unread_count = Message.query.filter_by(chat_id=chat.id, is_read=False).count()
         
-        last_message = Message.query.filter_by(
-            chat_id=chat_id, 
-            is_deleted=False
-        ).order_by(Message.created_at.desc()).first()
-        
-        members = ChatMember.query.filter_by(chat_id=chat_id).all()
-        unread_count = 0
-        
-        if chat.chat_type == 'private' and len(members) == 2:
-            other_user_id = next((m.user_id for m in members if m.user_id != user_id), None)
-            if other_user_id:
-                other_user = User.query.get(other_user_id)
-                chat_name = other_user.username if other_user else 'Пользователь'
-                chat_avatar = other_user.avatar
-            else:
-                chat_name = 'Приватный чат'
-                chat_avatar = None
-        else:
-            chat_name = chat.name or 'Группа'
-            chat_avatar = chat.avatar
-        
-        chats.append({
-            'id': chat.id,
-            'name': chat_name,
-            'avatar': chat_avatar,
-            'type': chat.chat_type,
-            'last_message': {
-                'content': last_message.content[:50] + '...' if last_message and len(last_message.content) > 50 else last_message.content if last_message else '',
-                'time': last_message.created_at.isoformat() if last_message else '',
-                'sender': last_message.user_id if last_message else None
-            } if last_message else None,
-            'unread_count': unread_count
-        })
-    
-    chats.sort(key=lambda x: x['last_message']['time'] if x['last_message'] else '', reverse=True)
-    
-    return jsonify(chats)
-
-@app.route('/api/chat/create', methods=['POST'])
-def create_chat():
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({'success': False, 'error': 'Не авторизован'})
-    
-    data = request.json
-    chat_type = data.get('type', 'private')
-    member_ids = data.get('members', [])
-    name = data.get('name', '').strip()
-    
-    if user_id not in member_ids:
-        member_ids.append(user_id)
-    
-    if chat_type == 'private' and len(member_ids) == 2:
-        existing_chat = None
-        for chat in Chat.query.filter_by(chat_type='private').all():
-            chat_members = [m.user_id for m in ChatMember.query.filter_by(chat_id=chat.id).all()]
-            if set(chat_members) == set(member_ids):
-                existing_chat = chat
-                break
-        
-        if existing_chat:
-            return jsonify({'success': True, 'chat_id': existing_chat.id})
-    
-    chat = Chat(
-        name=name if chat_type == 'group' else '',
-        chat_type=chat_type,
-        created_by=user_id,
-        avatar=data.get('avatar')
-    )
-    
-    db.session.add(chat)
-    db.session.flush()
-    
-    for member_id in member_ids:
-        role = 'admin' if member_id == user_id and chat_type == 'group' else 'member'
-        member = ChatMember(chat_id=chat.id, user_id=member_id, role=role)
-        db.session.add(member)
-    
-    db.session.commit()
-    
-    return jsonify({'success': True, 'chat_id': chat.id})
-
-@app.route('/api/chat/<int:chat_id>')
-def get_chat_info(chat_id):
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({'success': False, 'error': 'Не авторизован'})
-    
-    membership = ChatMember.query.filter_by(chat_id=chat_id, user_id=user_id).first()
-    if not membership:
-        return jsonify({'success': False, 'error': 'Нет доступа'})
-    
-    chat = Chat.query.get(chat_id)
-    members = ChatMember.query.filter_by(chat_id=chat_id).all()
-    
-    members_info = []
-    for member in members:
-        user = User.query.get(member.user_id)
-        if user:
-            members_info.append({
-                'id': user.id,
-                'username': user.username,
-                'avatar': user.avatar,
-                'role': member.role
-            })
-    
-    return jsonify({
-        'success': True,
-        'chat': {
+        result.append({
             'id': chat.id,
             'name': chat.name,
-            'type': chat.chat_type,
-            'avatar': chat.avatar,
-            'description': chat.description,
-            'members': members_info
-        }
-    })
+            'is_group': chat.is_group,
+            'last_message': last_message.content if last_message else '',
+            'timestamp': last_message.timestamp.isoformat() if last_message else '',
+            'unread': unread_count
+        })
+    
+    return jsonify(result)
 
 @app.route('/api/chat/<int:chat_id>/messages')
-def get_chat_messages(chat_id):
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({'success': False, 'error': 'Не авторизован'})
+def get_messages(chat_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
     
-    membership = ChatMember.query.filter_by(chat_id=chat_id, user_id=user_id).first()
-    if not membership:
-        return jsonify({'success': False, 'error': 'Нет доступа'})
-    
-    messages = Message.query.filter_by(
-        chat_id=chat_id, 
-        is_deleted=False
-    ).order_by(Message.created_at.asc()).all()
+    messages = Message.query.filter_by(chat_id=chat_id).order_by(Message.timestamp).all()
     
     result = []
     for msg in messages:
         user = User.query.get(msg.user_id)
         result.append({
             'id': msg.id,
-            'user_id': msg.user_id,
-            'username': user.username if user else 'Неизвестно',
-            'avatar': user.avatar if user else None,
             'content': msg.content,
-            'type': msg.message_type,
-            'created_at': msg.created_at.isoformat(),
-            'is_self': msg.user_id == user_id,
-            'can_delete': msg.user_id == user_id
+            'timestamp': msg.timestamp.isoformat(),
+            'user': {
+                'id': user.id,
+                'nickname': user.nickname,
+                'avatar': user.avatar
+            }
         })
+    
+    # Помечаем сообщения как прочитанные
+    Message.query.filter_by(chat_id=chat_id, is_read=False).update({'is_read': True})
+    db.session.commit()
     
     return jsonify(result)
 
-@app.route('/api/message/delete', methods=['POST'])
-def delete_message():
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({'success': False, 'error': 'Не авторизован'})
+@app.route('/api/user/update', methods=['POST'])
+def update_profile():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
     
-    data = request.json
-    message_id = data.get('message_id')
+    data = request.get_json()
+    user = User.query.get(session['user_id'])
     
-    message = Message.query.get(message_id)
-    if not message:
-        return jsonify({'success': False, 'error': 'Сообщение не найдено'})
+    if 'nickname' in data and data['nickname'] != user.nickname:
+        if User.query.filter_by(nickname=data['nickname']).first():
+            return jsonify({'success': False, 'error': 'Никнейм уже занят'})
+        user.nickname = data['nickname']
     
-    if message.user_id != user_id:
-        return jsonify({'success': False, 'error': 'Нет прав'})
+    if 'status' in data:
+        user.status = data['status']
     
-    message.is_deleted = True
-    message.deleted_at = datetime.utcnow()
+    if 'privacy' in data:
+        user.privacy = data['privacy']
+    
     db.session.commit()
-    
-    socketio.emit('message_deleted', {
-        'message_id': message_id,
-        'chat_id': message.chat_id
-    }, room=f'chat_{message.chat_id}')
-    
     return jsonify({'success': True})
 
-# Socket.IO события
+@app.route('/api/chat/create', methods=['POST'])
+def create_chat():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    
+    data = request.get_json()
+    user_id = session['user_id']
+    target_user_id = data.get('user_id')
+    
+    # Проверяем, существует ли уже чат
+    existing_chat = db.session.query(Chat).join(ChatMember).filter(
+        ChatMember.user_id == user_id,
+        Chat.id.in_(
+            db.session.query(ChatMember.chat_id).filter(ChatMember.user_id == target_user_id)
+        )
+    ).first()
+    
+    if existing_chat:
+        return jsonify({'success': True, 'chat_id': existing_chat.id})
+    
+    # Создаем новый чат
+    target_user = User.query.get(target_user_id)
+    chat = Chat(name=f"{user_id}_{target_user_id}", is_group=False)
+    db.session.add(chat)
+    db.session.commit()
+    
+    # Добавляем участников
+    chat_member1 = ChatMember(chat_id=chat.id, user_id=user_id)
+    chat_member2 = ChatMember(chat_id=chat.id, user_id=target_user_id)
+    db.session.add_all([chat_member1, chat_member2])
+    db.session.commit()
+    
+    return jsonify({'success': True, 'chat_id': chat.id})
+
+# WebSocket события
 @socketio.on('connect')
 def handle_connect():
-    user_id = session.get('user_id')
-    if user_id:
-        join_room(f'user_{user_id}')
+    if 'user_id' in session:
+        user_id = session['user_id']
         user = User.query.get(user_id)
         if user:
-            user.status = 'online'
+            user.is_online = True
             db.session.commit()
-            
-            emit('user_status', {
-                'user_id': user_id,
-                'status': 'online',
-                'username': user.username
-            }, broadcast=True, include_self=False)
+            emit('user_status', {'user_id': user_id, 'is_online': True}, broadcast=True)
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    user_id = session.get('user_id')
-    if user_id:
+    if 'user_id' in session:
+        user_id = session['user_id']
         user = User.query.get(user_id)
         if user:
-            user.status = 'offline'
+            user.is_online = False
             user.last_seen = datetime.utcnow()
             db.session.commit()
-            
-            emit('user_status', {
-                'user_id': user_id,
-                'status': 'offline',
-                'username': user.username
-            }, broadcast=True, include_self=False)
+            emit('user_status', {'user_id': user_id, 'is_online': False}, broadcast=True)
 
 @socketio.on('join_chat')
 def handle_join_chat(data):
-    chat_id = data.get('chat_id')
-    user_id = session.get('user_id')
-    
-    if user_id and chat_id:
-        join_room(f'chat_{chat_id}')
+    chat_id = data['chat_id']
+    join_room(f'chat_{chat_id}')
 
 @socketio.on('leave_chat')
 def handle_leave_chat(data):
-    chat_id = data.get('chat_id')
-    user_id = session.get('user_id')
-    
-    if user_id and chat_id:
-        leave_room(f'chat_{chat_id}')
+    chat_id = data['chat_id']
+    leave_room(f'chat_{chat_id}')
 
 @socketio.on('send_message')
 def handle_send_message(data):
-    user_id = session.get('user_id')
-    if not user_id:
-        return
-    
-    chat_id = data.get('chat_id')
-    content = data.get('content', '').strip()
-    message_type = data.get('type', 'text')
-    
-    if not content or not chat_id:
-        return
-    
-    membership = ChatMember.query.filter_by(chat_id=chat_id, user_id=user_id).first()
-    if not membership:
-        return
+    chat_id = data['chat_id']
+    content = data['content']
+    user_id = session['user_id']
     
     message = Message(
         chat_id=chat_id,
         user_id=user_id,
-        content=content,
-        message_type=message_type
+        content=content
     )
     db.session.add(message)
     db.session.commit()
     
     user = User.query.get(user_id)
     
-    message_data = {
-        'id': message.id,
+    emit('new_message', {
+        'chat_id': chat_id,
+        'message': {
+            'id': message.id,
+            'content': content,
+            'timestamp': message.timestamp.isoformat(),
+            'user': {
+                'id': user_id,
+                'nickname': user.nickname,
+                'avatar': user.avatar
+            }
+        }
+    }, room=f'chat_{chat_id}')
+
+@socketio.on('typing')
+def handle_typing(data):
+    chat_id = data['chat_id']
+    is_typing = data['is_typing']
+    user_id = session['user_id']
+    
+    user = User.query.get(user_id)
+    
+    emit('user_typing', {
         'chat_id': chat_id,
         'user_id': user_id,
-        'username': user.username,
-        'avatar': user.avatar,
-        'content': content,
-        'type': message_type,
-        'created_at': message.created_at.isoformat(),
-        'is_self': False,
-        'can_delete': False
-    }
-    
-    # Отправляем ВСЕМ в чате
-    emit('new_message', message_data, room=f'chat_{chat_id}')
-    
-    # Отправляем отправителю тоже (но он уже получит через broadcast)
-    message_data['is_self'] = True
-    message_data['can_delete'] = True
-    emit('new_message', message_data, room=f'user_{user_id}')
-
-@socketio.on('typing_start')
-def handle_typing_start(data):
-    chat_id = data.get('chat_id')
-    user_id = session.get('user_id')
-    
-    if user_id and chat_id:
-        user = User.query.get(user_id)
-        
-        typing = UserTyping.query.filter_by(user_id=user_id, chat_id=chat_id).first()
-        if typing:
-            typing.is_typing = True
-            typing.updated_at = datetime.utcnow()
-        else:
-            typing = UserTyping(user_id=user_id, chat_id=chat_id, is_typing=True)
-            db.session.add(typing)
-        
-        db.session.commit()
-        
-        emit('user_typing', {
-            'user_id': user_id,
-            'username': user.username,
-            'chat_id': chat_id,
-            'is_typing': True
-        }, room=f'chat_{chat_id}', broadcast=True, include_self=False)
-
-@socketio.on('typing_stop')
-def handle_typing_stop(data):
-    chat_id = data.get('chat_id')
-    user_id = session.get('user_id')
-    
-    if user_id and chat_id:
-        typing = UserTyping.query.filter_by(user_id=user_id, chat_id=chat_id).first()
-        if typing:
-            typing.is_typing = False
-            db.session.commit()
-        
-        emit('user_typing', {
-            'user_id': user_id,
-            'chat_id': chat_id,
-            'is_typing': False
-        }, room=f'chat_{chat_id}', broadcast=True, include_self=False)
+        'user_nickname': user.nickname,
+        'is_typing': is_typing
+    }, room=f'chat_{chat_id}')
 
 if __name__ == '__main__':
-    print("🚀 Запуск DeppLink Messenger...")
-    print("🌐 Сервер доступен по адресу: http://0.0.0.0:10000")
-    socketio.run(app, host='0.0.0.0', port=10000, allow_unsafe_werkzeug=True)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
