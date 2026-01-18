@@ -7,10 +7,10 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__, template_folder='.', static_folder='.')
-app.config['SECRET_KEY'] = 'telegram-clone-super-secret-2024'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///telegram.db'
+app.config['SECRET_KEY'] = 'deeplink-neon-secret-2024'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///deeplink.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['PERMANENT_SESSION_LIFETIME'] = 86400 * 30
+app.config['PERMANENT_SESSION_LIFETIME'] = 86400 * 365  # 1 год
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 db = SQLAlchemy(app)
@@ -20,9 +20,9 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
     password_hash = db.Column(db.String(200), nullable=False)
-    avatar = db.Column(db.Text, default='default')
-    bio = db.Column(db.String(200), default='')
-    phone = db.Column(db.String(20))
+    avatar = db.Column(db.Text, default='https://api.dicebear.com/7.x/avataaars/svg?seed={username}&background=0a0a0a&color=00ffff')
+    bio = db.Column(db.String(200), default='Использую DeppLink! 🚀')
+    theme = db.Column(db.String(20), default='neon-dark')
     status = db.Column(db.String(20), default='offline')
     last_seen = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -59,6 +59,16 @@ class UserTyping(db.Model):
     is_typing = db.Column(db.Boolean, default=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class UserSettings(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), unique=True)
+    notifications = db.Column(db.Boolean, default=True)
+    sounds = db.Column(db.Boolean, default=True)
+    auto_download = db.Column(db.Boolean, default=True)
+    privacy = db.Column(db.String(20), default='everyone')  # everyone, contacts, nobody
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 # Создаем таблицы
 with app.app_context():
     db.create_all()
@@ -81,6 +91,14 @@ def check_auth():
         if user:
             user.status = 'online'
             db.session.commit()
+            
+            # Получаем настройки пользователя
+            settings = UserSettings.query.filter_by(user_id=user_id).first()
+            if not settings:
+                settings = UserSettings(user_id=user_id)
+                db.session.add(settings)
+                db.session.commit()
+            
             return jsonify({
                 'authenticated': True,
                 'user': {
@@ -88,8 +106,15 @@ def check_auth():
                     'username': user.username,
                     'avatar': user.avatar,
                     'bio': user.bio,
+                    'theme': user.theme,
                     'status': user.status,
                     'last_seen': user.last_seen.isoformat() if user.last_seen else None
+                },
+                'settings': {
+                    'notifications': settings.notifications,
+                    'sounds': settings.sounds,
+                    'auto_download': settings.auto_download,
+                    'privacy': settings.privacy
                 }
             })
     return jsonify({'authenticated': False})
@@ -109,14 +134,23 @@ def register():
     user = User(
         username=username,
         password_hash=generate_password_hash(password),
-        bio='Привет! Я новый пользователь Telegram',
+        avatar=f'https://api.dicebear.com/7.x/avataaars/svg?seed={username}&background=0a0a0a&color=00ffff',
+        bio='Привет! Я новый пользователь DeppLink 🚀',
+        theme='neon-dark',
         status='online'
     )
     
     db.session.add(user)
+    db.session.flush()
+    
+    # Создаем настройки по умолчанию
+    settings = UserSettings(user_id=user.id)
+    db.session.add(settings)
+    
     db.session.commit()
     
     session['user_id'] = user.id
+    session.permanent = True
     
     return jsonify({
         'success': True,
@@ -125,6 +159,7 @@ def register():
             'username': user.username,
             'avatar': user.avatar,
             'bio': user.bio,
+            'theme': user.theme,
             'status': user.status
         }
     })
@@ -144,6 +179,14 @@ def login():
     db.session.commit()
     
     session['user_id'] = user.id
+    session.permanent = True
+    
+    # Получаем настройки
+    settings = UserSettings.query.filter_by(user_id=user.id).first()
+    if not settings:
+        settings = UserSettings(user_id=user.id)
+        db.session.add(settings)
+        db.session.commit()
     
     return jsonify({
         'success': True,
@@ -152,8 +195,15 @@ def login():
             'username': user.username,
             'avatar': user.avatar,
             'bio': user.bio,
+            'theme': user.theme,
             'status': user.status,
             'last_seen': user.last_seen.isoformat()
+        },
+        'settings': {
+            'notifications': settings.notifications,
+            'sounds': settings.sounds,
+            'auto_download': settings.auto_download,
+            'privacy': settings.privacy
         }
     })
 
@@ -192,6 +242,9 @@ def update_user():
     if 'avatar' in data:
         user.avatar = data['avatar']
     
+    if 'theme' in data:
+        user.theme = data['theme']
+    
     db.session.commit()
     
     # Уведомляем об обновлении профиля
@@ -199,8 +252,40 @@ def update_user():
         'user_id': user.id,
         'username': user.username,
         'avatar': user.avatar,
-        'bio': user.bio
+        'bio': user.bio,
+        'theme': user.theme
     }, broadcast=True)
+    
+    return jsonify({'success': True})
+
+@app.route('/api/settings/update', methods=['POST'])
+def update_settings():
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'success': False, 'error': 'Не авторизован'})
+    
+    data = request.json
+    settings = UserSettings.query.filter_by(user_id=user_id).first()
+    
+    if not settings:
+        settings = UserSettings(user_id=user_id)
+        db.session.add(settings)
+    
+    if 'notifications' in data:
+        settings.notifications = bool(data['notifications'])
+    
+    if 'sounds' in data:
+        settings.sounds = bool(data['sounds'])
+    
+    if 'auto_download' in data:
+        settings.auto_download = bool(data['auto_download'])
+    
+    if 'privacy' in data:
+        if data['privacy'] in ['everyone', 'contacts', 'nobody']:
+            settings.privacy = data['privacy']
+    
+    settings.updated_at = datetime.utcnow()
+    db.session.commit()
     
     return jsonify({'success': True})
 
@@ -221,6 +306,7 @@ def get_user(user_id):
             'username': user.username,
             'avatar': user.avatar,
             'bio': user.bio,
+            'theme': user.theme,
             'status': user.status,
             'last_seen': user.last_seen.isoformat() if user.last_seen else None
         }
@@ -272,7 +358,7 @@ def get_chats():
         
         # Получаем участников для имени
         members = ChatMember.query.filter_by(chat_id=chat_id).all()
-        unread_count = 0  # Можно реализовать позже
+        unread_count = 0
         
         if chat.chat_type == 'private' and len(members) == 2:
             other_user_id = next((m.user_id for m in members if m.user_id != user_id), None)
@@ -585,29 +671,6 @@ def handle_typing_stop(data):
             'chat_id': chat_id,
             'is_typing': False
         }, room=f'chat_{chat_id}', broadcast=True, include_self=False)
-
-@socketio.on('get_typing_status')
-def handle_get_typing_status(data):
-    chat_id = data.get('chat_id')
-    user_id = session.get('user_id')
-    
-    if user_id and chat_id:
-        # Получаем всех, кто печатает в этом чате
-        typing_users = UserTyping.query.filter_by(chat_id=chat_id, is_typing=True).all()
-        
-        users_typing = []
-        for typing in typing_users:
-            user = User.query.get(typing.user_id)
-            if user and user.id != user_id:
-                users_typing.append({
-                    'user_id': user.id,
-                    'username': user.username
-                })
-        
-        emit('typing_status', {
-            'chat_id': chat_id,
-            'users_typing': users_typing
-        }, room=f'user_{user_id}')
 
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=10000, allow_unsafe_werkzeug=True)
