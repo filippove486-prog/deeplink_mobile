@@ -6,7 +6,7 @@ from datetime import datetime
 import json
 import os
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='.', static_folder='.')
 app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///messenger.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -360,4 +360,5 @@ if __name__ == "__main__":
         port=5000,
         allow_unsafe_werkzeug=True
     )
+
 
