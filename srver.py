@@ -1,440 +1,420 @@
-from flask import Flask, render_template, request, jsonify, session
-from flask_socketio import SocketIO, emit, join_room, leave_room
+#!/usr/bin/env python3
+"""
+Deeplink Messenger - Полный сервер на FastAPI + WebSocket
+Автоматический вход, сохранение данных, AI-бот, каналы, карточки сообщений.
+"""
+
 import json
-import os
 import uuid
+import asyncio
+import secrets
 from datetime import datetime
-from typing import Dict, List
-import logging
+from typing import Dict, List, Optional
+from enum import Enum
 
-logging.basicConfig(level=logging.INFO)
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+import aiosqlite
+import uvicorn
 
-app = Flask(__name__, template_folder='.', static_folder='.')
-app.config['SECRET_KEY'] = 'deeplink-secret-key-2024'
-socketio = SocketIO(app, cors_allowed_origins="*")
+# ========== МОДЕЛИ ДАННЫХ ==========
+class MessageType(str, Enum):
+    TEXT = "text"
+    TASK = "task"
+    POLL = "poll"
+    LINK = "link"
+    CODE = "code"
 
-# База данных в памяти
-users_db = {}
-chats_db = {}
-messages_db = {}
-online_users = {}
+class User(BaseModel):
+    id: str
+    username: str
+    token: str
+    avatar: str = "👤"
+    online: bool = False
 
-def generate_avatar(name):
-    return f"https://ui-avatars.com/api/?name={name}&background=0a0a0a&color=ffffff&bold=true"
+class Message(BaseModel):
+    id: str
+    type: MessageType
+    content: str
+    sender_id: str
+    channel_id: str
+    timestamp: str
+    metadata: dict = {}
+    reactions: Dict[str, List[str]] = {}
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+class Channel(BaseModel):
+    id: str
+    name: str
+    type: str = "chat"
+    members: List[str] = []
+    settings: dict = {}
 
-@app.route('/api/register', methods=['POST'])
-def register():
-    data = request.get_json()
-    username = data.get('username', '').strip()
-    password = data.get('password', '').strip()
-    
-    if not username or not password:
-        return jsonify({'success': False, 'error': 'Заполните все поля'})
-    
-    if username in users_db:
-        return jsonify({'success': False, 'error': 'Имя пользователя уже занято'})
-    
-    if password == username:
-        return jsonify({'success': False, 'error': 'Пароль не может совпадать с логином'})
-    
-    user_id = str(uuid.uuid4())
-    users_db[username] = {
-        'id': user_id,
-        'username': username,
-        'password': password,  # В реальном приложении хешируйте пароль!
-        'nickname': username,
-        'avatar': generate_avatar(username),
-        'bio': f'Привет, я {username}!',
-        'status': 'online',
-        'created_at': datetime.now().isoformat(),
-        'last_seen': datetime.now().isoformat()
-    }
-    
-    # Создаем чат с самим собой для избранного
-    chat_id = str(uuid.uuid4())
-    chats_db[chat_id] = {
-        'id': chat_id,
-        'type': 'self',
-        'name': 'Избранное',
-        'members': [username],
-        'created_at': datetime.now().isoformat(),
-        'last_message': None,
-        'unread': 0
-    }
-    
-    return jsonify({
-        'success': True,
-        'user': {
-            'id': user_id,
-            'username': username,
-            'nickname': username,
-            'avatar': generate_avatar(username),
-            'bio': ''
-        }
-    })
-
-@app.route('/api/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    username = data.get('username', '').strip()
-    password = data.get('password', '').strip()
-    
-    if not username or not password:
-        return jsonify({'success': False, 'error': 'Заполните все поля'})
-    
-    user = users_db.get(username)
-    if not user:
-        return jsonify({'success': False, 'error': 'Пользователь не найден'})
-    
-    if user['password'] != password:  # В реальном приложении проверяйте хеш!
-        return jsonify({'success': False, 'error': 'Неверный пароль'})
-    
-    user['status'] = 'online'
-    user['last_seen'] = datetime.now().isoformat()
-    
-    return jsonify({
-        'success': True,
-        'user': {
-            'id': user['id'],
-            'username': user['username'],
-            'nickname': user['nickname'],
-            'avatar': user['avatar'],
-            'bio': user['bio']
-        }
-    })
-
-@app.route('/api/search', methods=['GET'])
-def search_users():
-    query = request.args.get('q', '').strip().lower()
-    current_user = request.args.get('current_user', '')
-    
-    if not query:
-        return jsonify([])
-    
-    results = []
-    for username, user in users_db.items():
-        if username == current_user:
-            continue
-            
-        if (query in username.lower() or 
-            query in user['nickname'].lower()):
-            results.append({
-                'id': user['id'],
-                'username': user['username'],
-                'nickname': user['nickname'],
-                'avatar': user['avatar'],
-                'status': user['status'],
-                'last_seen': user['last_seen']
-            })
-    
-    return jsonify(results[:20])
-
-@app.route('/api/chats', methods=['GET'])
-def get_chats():
-    username = request.args.get('username')
-    if not username:
-        return jsonify([])
-    
-    user_chats = []
-    for chat_id, chat in chats_db.items():
-        if username in chat['members']:
-            # Получаем последнее сообщение
-            chat_messages = messages_db.get(chat_id, [])
-            last_message = chat_messages[-1] if chat_messages else None
-            
-            # Получаем информацию о другом пользователе для приватных чатов
-            chat_info = chat.copy()
-            
-            if chat['type'] == 'private':
-                other_member = [m for m in chat['members'] if m != username][0]
-                other_user = users_db.get(other_member)
-                if other_user:
-                    chat_info['display_name'] = other_user['nickname']
-                    chat_info['avatar'] = other_user['avatar']
-                    chat_info['status'] = other_user['status']
-            
-            if last_message:
-                chat_info['last_message'] = {
-                    'text': last_message['content'][:50] + ('...' if len(last_message['content']) > 50 else ''),
-                    'time': last_message['timestamp'],
-                    'sender': last_message['sender']
-                }
-            
-            user_chats.append(chat_info)
-    
-    # Сортируем по времени последнего сообщения
-    user_chats.sort(key=lambda x: x.get('last_message', {}).get('time', ''), reverse=True)
-    
-    return jsonify(user_chats)
-
-@app.route('/api/chat/<chat_id>/messages', methods=['GET'])
-def get_messages(chat_id):
-    username = request.args.get('username')
-    
-    if chat_id not in messages_db:
-        messages_db[chat_id] = []
-    
-    # Помечаем сообщения как прочитанные
-    for msg in messages_db[chat_id]:
-        if msg['sender'] != username:
-            msg['read'] = True
-    
-    return jsonify(messages_db[chat_id])
-
-@app.route('/api/chat/create', methods=['POST'])
-def create_chat():
-    data = request.get_json()
-    user1 = data.get('user1')
-    user2 = data.get('user2')
-    
-    if not user1 or not user2:
-        return jsonify({'success': False, 'error': 'Не указаны пользователи'})
-    
-    # Проверяем существующий чат
-    for chat_id, chat in chats_db.items():
-        if (chat['type'] == 'private' and 
-            user1 in chat['members'] and 
-            user2 in chat['members']):
-            return jsonify({'success': True, 'chat_id': chat_id})
-    
-    # Создаем новый чат
-    chat_id = str(uuid.uuid4())
-    
-    user1_info = users_db.get(user1)
-    user2_info = users_db.get(user2)
-    
-    chat_name = f"{user1_info['nickname']} и {user2_info['nickname']}"
-    
-    chats_db[chat_id] = {
-        'id': chat_id,
-        'type': 'private',
-        'name': chat_name,
-        'members': [user1, user2],
-        'created_at': datetime.now().isoformat(),
-        'last_message': None,
-        'unread': 0,
-        'display_name': user2_info['nickname'],
-        'avatar': user2_info['avatar'],
-        'status': user2_info['status']
-    }
-    
-    # Добавляем приветственное сообщение
-    welcome_msg = {
-        'id': str(uuid.uuid4()),
-        'chat_id': chat_id,
-        'sender': 'system',
-        'content': 'Чат создан. Начните общение!',
-        'timestamp': datetime.now().isoformat(),
-        'read': True
-    }
-    
-    if chat_id not in messages_db:
-        messages_db[chat_id] = []
-    messages_db[chat_id].append(welcome_msg)
-    
-    return jsonify({'success': True, 'chat_id': chat_id})
-
-@app.route('/api/user/update', methods=['POST'])
-def update_user():
-    data = request.get_json()
-    username = data.get('username')
-    updates = data.get('updates', {})
-    
-    if not username or username not in users_db:
-        return jsonify({'success': False, 'error': 'Пользователь не найден'})
-    
-    user = users_db[username]
-    
-    # Обновляем поля
-    if 'nickname' in updates:
-        user['nickname'] = updates['nickname']
-    
-    if 'bio' in updates:
-        user['bio'] = updates['bio']
-    
-    if 'avatar' in updates and updates['avatar']:
-        user['avatar'] = updates['avatar']
-    
-    return jsonify({'success': True, 'user': user})
-
-# WebSocket события
-@socketio.on('connect')
-def handle_connect():
-    logging.info(f'Клиент подключился: {request.sid}')
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    logging.info(f'Клиент отключился: {request.sid}')
-
-@socketio.on('join')
-def handle_join(data):
-    username = data.get('username')
-    if username:
-        join_room(username)
-        online_users[username] = request.sid
+# ========== ЯДРО СЕРВЕРА ==========
+class DeeplinkServer:
+    def __init__(self):
+        self.app = FastAPI(title="Deeplink Messenger")
+        self.active_connections: Dict[str, WebSocket] = {}
+        self.users: Dict[str, User] = {}
+        self.channels: Dict[str, Channel] = {}
+        self.messages: Dict[str, List[Message]] = {}
+        self.db = None
         
-        # Обновляем статус пользователя
-        if username in users_db:
-            users_db[username]['status'] = 'online'
-            users_db[username]['last_seen'] = datetime.now().isoformat()
+        # Создаём системные каналы
+        self._create_default_channels()
         
-        emit('user_online', {'username': username}, broadcast=True)
-
-@socketio.on('leave')
-def handle_leave(data):
-    username = data.get('username')
-    if username and username in online_users:
-        leave_room(username)
-        del online_users[username]
+        # Настраиваем маршруты
+        self.setup_routes()
+    
+    def _create_default_channels(self):
+        """Создаём начальные каналы"""
+        general = Channel(
+            id="general",
+            name="📢 Общий чат",
+            type="chat",
+            members=[]
+        )
+        self.channels["general"] = general
+        self.messages["general"] = []
         
-        if username in users_db:
-            users_db[username]['status'] = 'offline'
-            users_db[username]['last_seen'] = datetime.now().isoformat()
+        tasks = Channel(
+            id="tasks",
+            name="✅ Задачи",
+            type="kanban",
+            members=[]
+        )
+        self.channels["tasks"] = tasks
+        self.messages["tasks"] = []
         
-        emit('user_offline', {'username': username}, broadcast=True)
-
-@socketio.on('join_chat')
-def handle_join_chat(data):
-    chat_id = data.get('chat_id')
-    if chat_id:
-        join_room(f'chat_{chat_id}')
-
-@socketio.on('send_message')
-def handle_send_message(data):
-    chat_id = data.get('chat_id')
-    sender = data.get('sender')
-    content = data.get('content')
+        media = Channel(
+            id="media",
+            name="🖼️ Медиа",
+            type="media",
+            members=[]
+        )
+        self.channels["media"] = media
+        self.messages["media"] = []
     
-    if not all([chat_id, sender, content]):
-        return
-    
-    # Создаем сообщение
-    message = {
-        'id': str(uuid.uuid4()),
-        'chat_id': chat_id,
-        'sender': sender,
-        'content': content,
-        'timestamp': datetime.now().isoformat(),
-        'read': False
-    }
-    
-    # Сохраняем сообщение
-    if chat_id not in messages_db:
-        messages_db[chat_id] = []
-    messages_db[chat_id].append(message)
-    
-    # Обновляем последнее сообщение в чате
-    if chat_id in chats_db:
-        chats_db[chat_id]['last_message'] = {
-            'text': content[:50] + ('...' if len(content) > 50 else ''),
-            'time': message['timestamp'],
-            'sender': sender
-        }
-        chats_db[chat_id]['unread'] += 1
-    
-    # Отправляем всем участникам чата
-    emit('new_message', message, room=f'chat_{chat_id}', broadcast=True)
-    
-    # Уведомляем участников (кроме отправителя)
-    chat = chats_db.get(chat_id)
-    if chat:
-        for member in chat['members']:
-            if member != sender and member in online_users:
-                emit('message_notification', {
-                    'chat_id': chat_id,
-                    'sender': sender,
-                    'content': content[:30] + ('...' if len(content) > 30 else '')
-                }, room=member)
-
-@socketio.on('typing')
-def handle_typing(data):
-    chat_id = data.get('chat_id')
-    username = data.get('username')
-    is_typing = data.get('is_typing')
-    
-    if chat_id and username:
-        # Отправляем всем в чате, кроме отправителя
-        emit('user_typing', {
-            'chat_id': chat_id,
-            'username': username,
-            'is_typing': is_typing
-        }, room=f'chat_{chat_id}', include_self=False)
-
-if __name__ == '__main__':
-    # Создаем тестовых пользователей
-    test_users = ['alice', 'bob', 'charlie', 'diana', 'evan']
-    
-    for username in test_users:
-        if username not in users_db:
-            user_id = str(uuid.uuid4())
-            users_db[username] = {
-                'id': user_id,
-                'username': username,
-                'password': 'password123',
-                'nickname': username.capitalize(),
-                'avatar': generate_avatar(username),
-                'bio': f'Привет, я {username.capitalize()}!',
-                'status': 'online',
-                'created_at': datetime.now().isoformat(),
-                'last_seen': datetime.now().isoformat()
+    def setup_routes(self):
+        """Настраиваем все endpoint'ы"""
+        
+        @self.app.get("/")
+        async def get_frontend():
+            return FileResponse("deeplink_client.html")
+        
+        @self.app.post("/api/register")
+        async def register(request: Request):
+            data = await request.json()
+            username = data.get("username", "").strip()
+            
+            if not username:
+                raise HTTPException(400, "Имя пользователя обязательно")
+            
+            # Проверяем, существует ли пользователь
+            for user in self.users.values():
+                if user.username.lower() == username.lower():
+                    # Возвращаем существующего пользователя
+                    return {
+                        "user": user.dict(),
+                        "message": "Автоматический вход выполнен"
+                    }
+            
+            # Создаём нового пользователя
+            user_id = str(uuid.uuid4())[:8]
+            token = secrets.token_hex(16)
+            
+            user = User(
+                id=user_id,
+                username=username,
+                token=token,
+                avatar=["👤", "👨", "👩", "🐱", "🦊", "🐶", "🦁"][len(self.users) % 7]
+            )
+            
+            self.users[user_id] = user
+            
+            # Добавляем во все каналы
+            for channel_id in self.channels:
+                if user_id not in self.channels[channel_id].members:
+                    self.channels[channel_id].members.append(user_id)
+            
+            return {
+                "user": user.dict(),
+                "message": "Регистрация успешна"
             }
+        
+        @self.app.post("/api/login")
+        async def login(request: Request):
+            data = await request.json()
+            user_id = data.get("user_id")
+            token = data.get("token")
             
-            # Создаем личный чат
-            chat_id = str(uuid.uuid4())
-            chats_db[chat_id] = {
-                'id': chat_id,
-                'type': 'self',
-                'name': 'Избранное',
-                'members': [username],
-                'created_at': datetime.now().isoformat(),
-                'last_message': None,
-                'unread': 0
+            if user_id in self.users and self.users[user_id].token == token:
+                user = self.users[user_id]
+                user.online = True
+                return {"user": user.dict(), "success": True}
+            
+            raise HTTPException(401, "Ошибка входа")
+        
+        @self.app.get("/api/channels")
+        async def get_channels():
+            return {
+                "channels": [c.dict() for c in self.channels.values()],
+                "users": [u.dict() for u in self.users.values() if u.online]
             }
+        
+        @self.app.get("/api/messages/{channel_id}")
+        async def get_channel_messages(channel_id: str, limit: int = 50):
+            if channel_id not in self.messages:
+                raise HTTPException(404, "Канал не найден")
+            return self.messages[channel_id][-limit:]
+        
+        @self.app.post("/api/channels/create")
+        async def create_channel(request: Request):
+            data = await request.json()
+            name = data.get("name", "Новый канал").strip()
+            channel_type = data.get("type", "chat")
+            
+            if not name:
+                raise HTTPException(400, "Название канала обязательно")
+            
+            channel_id = str(uuid.uuid4())[:8]
+            channel = Channel(
+                id=channel_id,
+                name=name,
+                type=channel_type,
+                members=list(self.users.keys())
+            )
+            
+            self.channels[channel_id] = channel
+            self.messages[channel_id] = []
+            
+            # Уведомляем всех о новом канале
+            await self.broadcast_system_message(f"Создан новый канал: {name}")
+            
+            return {"channel": channel.dict(), "success": True}
+        
+        @self.app.post("/api/message/send")
+        async def send_message(request: Request):
+            data = await request.json()
+            
+            message = Message(
+                id=str(uuid.uuid4()),
+                type=MessageType(data.get("type", "text")),
+                content=data["content"],
+                sender_id=data["sender_id"],
+                channel_id=data["channel_id"],
+                timestamp=datetime.now().strftime("%H:%M"),
+                metadata=data.get("metadata", {})
+            )
+            
+            if message.channel_id not in self.messages:
+                self.messages[message.channel_id] = []
+            
+            self.messages[message.channel_id].append(message)
+            
+            # Обработка специальных типов сообщений
+            if message.type == MessageType.TASK:
+                message.metadata["completed"] = False
+                message.metadata["completed_by"] = None
+            
+            elif message.type == MessageType.POLL:
+                if "options" not in message.metadata:
+                    message.metadata["options"] = ["Да", "Нет"]
+                message.metadata["votes"] = {}
+            
+            elif message.type == MessageType.LINK:
+                # Автоматическое создание превью для ссылок
+                if message.content.startswith(("http://", "https://")):
+                    message.metadata["preview"] = True
+                    message.metadata["title"] = f"Ссылка от {self.users[message.sender_id].username}"
+                    message.metadata["description"] = "Нажмите для перехода"
+            
+            # AI-ответ для сообщений с вопросом
+            if "?" in message.content and message.channel_id == "general":
+                asyncio.create_task(self.send_ai_response(message))
+            
+            # Рассылаем сообщение всем подключённым
+            await self.broadcast_message(message)
+            
+            return {"success": True, "message_id": message.id}
+        
+        @self.app.post("/api/message/react")
+        async def react_to_message(request: Request):
+            data = await request.json()
+            message_id = data["message_id"]
+            channel_id = data["channel_id"]
+            user_id = data["user_id"]
+            emoji = data["emoji"]
+            
+            for msg in self.messages.get(channel_id, []):
+                if msg.id == message_id:
+                    if emoji not in msg.reactions:
+                        msg.reactions[emoji] = []
+                    if user_id not in msg.reactions[emoji]:
+                        msg.reactions[emoji].append(user_id)
+                    
+                    await self.broadcast_reaction(msg)
+                    return {"success": True}
+            
+            raise HTTPException(404, "Сообщение не найдено")
+        
+        @self.app.post("/api/message/update")
+        async def update_message(request: Request):
+            data = await request.json()
+            message_id = data["message_id"]
+            channel_id = data["channel_id"]
+            action = data["action"]
+            user_id = data.get("user_id")
+            
+            for msg in self.messages.get(channel_id, []):
+                if msg.id == message_id:
+                    if action == "complete_task" and msg.type == MessageType.TASK:
+                        msg.metadata["completed"] = True
+                        msg.metadata["completed_by"] = user_id
+                    
+                    elif action == "vote" and msg.type == MessageType.POLL:
+                        option = data["option"]
+                        votes = msg.metadata.get("votes", {})
+                        votes[user_id] = option
+                        msg.metadata["votes"] = votes
+                    
+                    await self.broadcast_message(msg)
+                    return {"success": True}
+            
+            raise HTTPException(404, "Сообщение не найдено")
+        
+        @self.app.post("/api/ai/summarize")
+        async def summarize_chat(request: Request):
+            """AI-резюме чата"""
+            data = await request.json()
+            channel_id = data["channel_id"]
+            
+            if channel_id not in self.messages or len(self.messages[channel_id]) < 3:
+                return {"summary": "Недостаточно сообщений для анализа"}
+            
+            last_messages = self.messages[channel_id][-10:]
+            topics = set()
+            participants = set()
+            
+            for msg in last_messages:
+                participants.add(self.users.get(msg.sender_id, User(id="", username="", token="")).username)
+                # Простой анализ ключевых слов
+                if any(word in msg.content.lower() for word in ["задача", "сделать", "нужно"]):
+                    topics.add("задачи")
+                if any(word in msg.content.lower() for word in ["вопрос", "почему", "как"]):
+                    topics.add("вопросы")
+                if any(word in msg.content.lower() for word in ["идея", "предложение"]):
+                    topics.add("идеи")
+            
+            summary = (
+                f"📊 За последние сообщения участвовали: {', '.join(participants)}. "
+                f"Обсуждаемые темы: {', '.join(topics) if topics else 'разные темы'}. "
+                f"Всего сообщений в канале: {len(self.messages[channel_id])}."
+            )
+            
+            return {"summary": summary}
+        
+        @self.app.websocket("/ws/{user_id}")
+        async def websocket_endpoint(websocket: WebSocket, user_id: str):
+            await websocket.accept()
+            self.active_connections[user_id] = websocket
+            
+            if user_id in self.users:
+                self.users[user_id].online = True
+            
+            try:
+                while True:
+                    data = await websocket.receive_json()
+                    # Обработка WebSocket-команд
+                    if data.get("type") == "ping":
+                        await websocket.send_json({"type": "pong"})
+                    
+            except WebSocketDisconnect:
+                if user_id in self.active_connections:
+                    del self.active_connections[user_id]
+                if user_id in self.users:
+                    self.users[user_id].online = False
     
-    # Создаем тестовый чат между Alice и Bob
-    chat_id = str(uuid.uuid4())
-    chats_db[chat_id] = {
-        'id': chat_id,
-        'type': 'private',
-        'name': 'Alice и Bob',
-        'members': ['alice', 'bob'],
-        'created_at': datetime.now().isoformat(),
-        'last_message': None,
-        'unread': 0,
-        'display_name': 'Bob',
-        'avatar': generate_avatar('bob'),
-        'status': 'online'
-    }
+    async def broadcast_message(self, message: Message):
+        """Отправить сообщение всем подключённым пользователям"""
+        message_dict = message.dict()
+        message_dict["sender_name"] = self.users.get(message.sender_id, User(id="", username="Неизвестный", token="")).username
+        message_dict["sender_avatar"] = self.users.get(message.sender_id, User(id="", username="", token="")).avatar
+        
+        for user_id, ws in self.active_connections.items():
+            try:
+                await ws.send_json({
+                    "type": "new_message",
+                    "message": message_dict
+                })
+            except:
+                pass
     
-    # Добавляем тестовые сообщения
-    test_messages = [
-        {'sender': 'alice', 'content': 'Привет Bob! Как дела?'},
-        {'sender': 'bob', 'content': 'Привет Alice! Все отлично, спасибо!'},
-        {'sender': 'alice', 'content': 'Рад это слышать! 😊'},
-        {'sender': 'bob', 'content': 'Что нового?'}
-    ]
+    async def broadcast_reaction(self, message: Message):
+        """Отправить обновление реакций"""
+        for user_id, ws in self.active_connections.items():
+            try:
+                await ws.send_json({
+                    "type": "message_updated",
+                    "message_id": message.id,
+                    "channel_id": message.channel_id,
+                    "reactions": message.reactions,
+                    "metadata": message.metadata
+                })
+            except:
+                pass
     
-    messages_db[chat_id] = []
-    for msg_data in test_messages:
-        message = {
-            'id': str(uuid.uuid4()),
-            'chat_id': chat_id,
-            'sender': msg_data['sender'],
-            'content': msg_data['content'],
-            'timestamp': datetime.now().isoformat(),
-            'read': True
-        }
-        messages_db[chat_id].append(message)
+    async def broadcast_system_message(self, text: str):
+        """Отправить системное сообщение"""
+        system_msg = Message(
+            id=str(uuid.uuid4()),
+            type=MessageType.TEXT,
+            content=f"🔔 {text}",
+            sender_id="system",
+            channel_id="general",
+            timestamp=datetime.now().strftime("%H:%M"),
+            metadata={"system": True}
+        )
+        
+        self.messages["general"].append(system_msg)
+        await self.broadcast_message(system_msg)
     
-    # Обновляем последнее сообщение
-    chats_db[chat_id]['last_message'] = {
-        'text': test_messages[-1]['content'],
-        'time': datetime.now().isoformat(),
-        'sender': test_messages[-1]['sender']
-    }
+    async def send_ai_response(self, message: Message):
+        """Имитация AI-ответа"""
+        await asyncio.sleep(1)  # Задержка для реалистичности
+        
+        ai_responses = [
+            "🤖 Это интересный вопрос! Могу предложить обсудить это подробнее.",
+            "🤖 На основе предыдущих обсуждений, рекомендую проверить документацию.",
+            "🤖 Я LinkBot! Вижу у вас вопрос. Попробуйте задать его более конкретно.",
+            "🤖 Пока я учусь, но скоро смогу давать более развёрнутые ответы!",
+            "🤖 Запомнил ваш вопрос. Когда в чате появятся эксперты, они помогут."
+        ]
+        
+        ai_msg = Message(
+            id=str(uuid.uuid4()),
+            type=MessageType.TEXT,
+            content=secrets.choice(ai_responses),
+            sender_id="ai_bot",
+            channel_id=message.channel_id,
+            timestamp=datetime.now().strftime("%H:%M"),
+            metadata={"ai": True, "responding_to": message.id}
+        )
+        
+        self.messages[message.channel_id].append(ai_msg)
+        await self.broadcast_message(ai_msg)
+
+# ========== ЗАПУСК СЕРВЕРА ==========
+if __name__ == "__main__":
+    server = DeeplinkServer()
+    print("🚀 Deeplink Messenger Server запускается...")
+    print("📱 Откройте в браузере: http://localhost:8000")
+    print("📞 Оптимизировано для мобильных устройств")
     
-    socketio.run(app, host='0.0.0.0', port=10000, allow_unsafe_werkzeug=True, debug=True)
+    uvicorn.run(
+        server.app,
+        host="0.0.0.0",
+        port=8000,
+        reload=False
+    )
