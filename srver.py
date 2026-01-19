@@ -14,13 +14,16 @@ app.config['SECRET_KEY'] = 'deeplink-neon-secret-2024'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # База данных в памяти
-users = {}  # username -> user_data
-chats = {}  # chat_id -> chat_data
-messages = defaultdict(list)  # chat_id -> [messages]
-user_chats = defaultdict(set)  # username -> {chat_ids}
-typing_status = {}  # (chat_id, username) -> timestamp
-online_users = {}  # username -> socket_id
-user_settings = defaultdict(dict)  # username -> settings
+users = {}
+chats = {}
+messages = defaultdict(list)
+user_chats = defaultdict(set)
+online_users = {}
+user_settings = defaultdict(dict)
+deleted_messages = set()  # Для удаленных сообщений
+message_reactions = defaultdict(dict)  # Реакции на сообщения
+user_presence = {}  # Онлайн статус
+typing_status = {}  # Статус набора
 
 def generate_avatar(username):
     return f"https://ui-avatars.com/api/?name={username}&background=0a0a0a&color=ffffff&bold=true&size=128"
@@ -67,7 +70,10 @@ def api_register():
         'sound': True,
         'vibration': True,
         'show_online': True,
-        'read_receipts': True
+        'read_receipts': True,
+        'message_preview': True,
+        'auto_download': True,
+        'save_to_gallery': False
     }
     
     return jsonify({
@@ -157,8 +163,13 @@ def api_chats():
             
             # Получаем последнее сообщение
             chat_messages = messages.get(chat_id, [])
-            if chat_messages:
-                last_msg = chat_messages[-1]
+            last_msg = None
+            for msg in reversed(chat_messages):
+                if msg['id'] not in deleted_messages:
+                    last_msg = msg
+                    break
+            
+            if last_msg:
                 chat_data['last_message'] = {
                     'text': last_msg['content'],
                     'time': last_msg['timestamp'],
@@ -166,7 +177,7 @@ def api_chats():
                 }
                 # Считаем непрочитанные
                 unread = sum(1 for msg in chat_messages 
-                           if msg['sender'] != username and not msg.get('read', False))
+                           if msg['sender'] != username and not msg.get('read', False) and msg['id'] not in deleted_messages)
                 chat_data['unread'] = unread
             
             user_chats_list.append(chat_data)
@@ -182,12 +193,21 @@ def api_chat_messages(chat_id):
     if chat_id not in messages:
         return jsonify([])
     
+    # Возвращаем только неудаленные сообщения
+    chat_messages = [msg for msg in messages[chat_id] if msg['id'] not in deleted_messages]
+    
     # Помечаем сообщения как прочитанные
-    for msg in messages[chat_id]:
+    for msg in chat_messages:
         if msg['sender'] != username:
             msg['read'] = True
     
-    return jsonify(messages[chat_id])
+    # Добавляем реакции к сообщениям
+    for msg in chat_messages:
+        msg_id = msg['id']
+        if msg_id in message_reactions:
+            msg['reactions'] = message_reactions[msg_id]
+    
+    return jsonify(chat_messages)
 
 @app.route('/api/chat/create', methods=['POST'])
 def api_chat_create():
@@ -295,6 +315,97 @@ def api_get_user(username):
         'created_at': user['created_at']
     })
 
+@app.route('/api/message/delete', methods=['POST'])
+def api_message_delete():
+    data = request.get_json()
+    message_id = data.get('message_id')
+    username = data.get('username')
+    
+    if not message_id or not username:
+        return jsonify({'success': False, 'error': 'Не указаны данные'})
+    
+    # Ищем сообщение во всех чатах
+    for chat_id, chat_messages in messages.items():
+        for msg in chat_messages:
+            if msg['id'] == message_id:
+                # Проверяем, что пользователь может удалить сообщение
+                if msg['sender'] == username or username in chats[chat_id]['members']:
+                    deleted_messages.add(message_id)
+                    
+                    # Уведомляем всех в чате
+                    socketio.emit('message_deleted', {
+                        'message_id': message_id,
+                        'chat_id': chat_id,
+                        'deleted_by': username
+                    }, room=chat_id)
+                    
+                    return jsonify({'success': True})
+    
+    return jsonify({'success': False, 'error': 'Сообщение не найдено'})
+
+@app.route('/api/message/react', methods=['POST'])
+def api_message_react():
+    data = request.get_json()
+    message_id = data.get('message_id')
+    username = data.get('username')
+    reaction = data.get('reaction')
+    
+    if not all([message_id, username, reaction]):
+        return jsonify({'success': False, 'error': 'Не указаны данные'})
+    
+    if message_id not in message_reactions:
+        message_reactions[message_id] = {}
+    
+    if username in message_reactions[message_id]:
+        # Удаляем реакцию, если она уже есть
+        del message_reactions[message_id][username]
+        if not message_reactions[message_id]:
+            del message_reactions[message_id]
+    else:
+        # Добавляем реакцию
+        message_reactions[message_id][username] = reaction
+    
+    # Находим chat_id для сообщения
+    chat_id = None
+    for cid, chat_messages in messages.items():
+        for msg in chat_messages:
+            if msg['id'] == message_id:
+                chat_id = cid
+                break
+        if chat_id:
+            break
+    
+    if chat_id:
+        # Отправляем обновление всем в чате
+        socketio.emit('message_reaction', {
+            'message_id': message_id,
+            'username': username,
+            'reaction': reaction,
+            'chat_id': chat_id,
+            'reactions': message_reactions.get(message_id, {})
+        }, room=chat_id)
+    
+    return jsonify({'success': True, 'reactions': message_reactions.get(message_id, {})})
+
+@app.route('/api/chat/<chat_id>/clear', methods=['POST'])
+def api_chat_clear():
+    data = request.get_json()
+    chat_id = data.get('chat_id')
+    username = data.get('username')
+    
+    if not chat_id or not username:
+        return jsonify({'success': False, 'error': 'Не указаны данные'})
+    
+    if chat_id not in chats or username not in chats[chat_id]['members']:
+        return jsonify({'success': False, 'error': 'Доступ запрещен'})
+    
+    # Помечаем все сообщения как удаленные для этого пользователя
+    for msg in messages.get(chat_id, []):
+        if msg['sender'] != username:  # Не удаляем чужие сообщения полностью
+            deleted_messages.add(msg['id'])
+    
+    return jsonify({'success': True})
+
 # WebSocket
 @socketio.on('connect')
 def handle_connect():
@@ -305,8 +416,9 @@ def handle_disconnect():
     for username, socket_id in online_users.items():
         if socket_id == request.sid:
             del online_users[username]
-            users[username]['status'] = 'offline'
-            users[username]['last_seen'] = datetime.now().isoformat()
+            if username in users:
+                users[username]['status'] = 'offline'
+                users[username]['last_seen'] = datetime.now().isoformat()
             emit('user_offline', {'username': username}, broadcast=True)
             break
 
@@ -348,7 +460,8 @@ def handle_send_message(data):
         'sender': sender,
         'content': content,
         'timestamp': datetime.now().isoformat(),
-        'read': False
+        'read': False,
+        'edited': False
     }
     
     # Сохраняем сообщение
@@ -372,6 +485,8 @@ def handle_typing(data):
     is_typing = data.get('is_typing')
     
     if chat_id and username:
+        typing_status[(chat_id, username)] = datetime.now().isoformat() if is_typing else None
+        
         emit('user_typing', {
             'chat_id': chat_id,
             'username': username,
@@ -390,6 +505,31 @@ def handle_read_message(data):
             if msg['id'] == message_id and msg['sender'] != username:
                 msg['read'] = True
                 break
+
+@socketio.on('edit_message')
+def handle_edit_message(data):
+    message_id = data.get('message_id')
+    chat_id = data.get('chat_id')
+    username = data.get('username')
+    new_content = data.get('content', '').strip()
+    
+    if not all([message_id, chat_id, username, new_content]):
+        return
+    
+    # Ищем и редактируем сообщение
+    for msg in messages.get(chat_id, []):
+        if msg['id'] == message_id and msg['sender'] == username:
+            msg['content'] = new_content
+            msg['edited'] = True
+            msg['edited_at'] = datetime.now().isoformat()
+            
+            emit('message_edited', {
+                'message_id': message_id,
+                'chat_id': chat_id,
+                'content': new_content,
+                'edited_at': msg['edited_at']
+            }, room=chat_id, broadcast=True)
+            break
 
 if __name__ == '__main__':
     # Создаем тестовых пользователей
@@ -423,11 +563,14 @@ if __name__ == '__main__':
                 'sound': True,
                 'vibration': True,
                 'show_online': True,
-                'read_receipts': True
+                'read_receipts': True,
+                'message_preview': True,
+                'auto_download': True,
+                'save_to_gallery': False
             }
     
     # Создаем тестовый чат
-    if True:  # Всегда создаем новый тестовый чат
+    if True:
         chat_id = str(uuid.uuid4())
         chats[chat_id] = {
             'id': chat_id,
@@ -458,7 +601,8 @@ if __name__ == '__main__':
                 'sender': msg_data['sender'],
                 'content': msg_data['content'],
                 'timestamp': datetime.now().isoformat(),
-                'read': True
+                'read': True,
+                'edited': False
             }
             messages[chat_id].append(message)
         
