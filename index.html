@@ -18,7 +18,9 @@
             --bg-primary: #0a0a0a;
             --bg-secondary: #151515;
             --bg-tertiary: #1f1f1f;
+            --bg-hover: rgba(255, 255, 255, 0.05);
             --border: #2a2a2a;
+            --border-light: #3a3a3a;
             --text-primary: #ffffff;
             --text-secondary: #b0b0b0;
             --text-muted: #666;
@@ -28,6 +30,7 @@
             --online: #00ff9d;
             --offline: #ff4757;
             --typing: #00ccff;
+            --warning: #ff9500;
             --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
             --radius-sm: 8px;
             --radius-md: 12px;
@@ -84,6 +87,12 @@
         @keyframes typingDots {
             0%, 60%, 100% { opacity: 0.3; }
             30% { opacity: 1; }
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            10%, 30%, 50%, 70%, 90% { transform: translateX(-2px); }
+            20%, 40%, 60%, 80% { transform: translateX(2px); }
         }
 
         /* Основной контейнер */
@@ -235,7 +244,7 @@
         }
 
         .chat-item:hover {
-            background: var(--bg-tertiary);
+            background: var(--bg-hover);
         }
 
         .chat-item.active {
@@ -464,6 +473,7 @@
         .message {
             max-width: 75%;
             animation: fadeIn 0.3s ease;
+            position: relative;
         }
 
         .message.incoming {
@@ -482,6 +492,8 @@
             word-wrap: break-word;
             position: relative;
             transition: all 0.2s ease;
+            cursor: pointer;
+            user-select: text;
         }
 
         .message.incoming .message-content {
@@ -497,6 +509,10 @@
             border-bottom-right-radius: var(--radius-sm);
         }
 
+        .message-content:hover {
+            filter: brightness(1.1);
+        }
+
         .message-time {
             font-size: 11px;
             color: var(--text-muted);
@@ -504,6 +520,10 @@
             text-align: right;
             padding: 0 4px;
             font-feature-settings: "tnum";
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 4px;
         }
 
         .message.outgoing .message-time {
@@ -515,7 +535,47 @@
             margin-left: 4px;
         }
 
-        /* Ввод сообщения */
+        .message-edited {
+            font-size: 10px;
+            color: var(--text-muted);
+            font-style: italic;
+            margin-left: 4px;
+        }
+
+        .message-reactions {
+            display: flex;
+            gap: 4px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+
+        .reaction {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-full);
+            padding: 4px 8px;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .reaction:hover {
+            transform: scale(1.1);
+        }
+
+        .reaction.active {
+            background: var(--accent);
+            color: var(--bg-primary);
+        }
+
+        .reaction-count {
+            font-weight: 600;
+        }
+
+        /* Ввод сообщения - ИСПРАВЛЕНО: больше высота */
         .input-area {
             padding: 20px;
             background: var(--bg-secondary);
@@ -536,11 +596,11 @@
             background: var(--bg-primary);
             border: 1px solid var(--border);
             border-radius: var(--radius-full);
-            padding: 12px 20px;
+            padding: 16px 20px; /* Увеличено с 12px */
             display: flex;
             align-items: center;
             transition: all 0.3s ease;
-            min-height: 52px;
+            min-height: 60px; /* Увеличено с 52px */
         }
 
         .input-wrapper:focus-within {
@@ -553,28 +613,53 @@
             background: none;
             border: none;
             color: var(--text-primary);
-            font-size: 15px;
+            font-size: 16px; /* Увеличено с 15px */
             padding: 0;
-            min-height: 28px;
-            max-height: 120px;
+            min-height: 32px; /* Увеличено с 28px */
+            max-height: 150px; /* Увеличено с 120px */
             resize: none;
             outline: none;
             font-family: inherit;
-            line-height: 1.4;
+            line-height: 1.5;
         }
 
         .message-input::placeholder {
             color: var(--text-secondary);
         }
 
+        .input-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+
+        .input-action-btn {
+            background: var(--bg-tertiary);
+            border: none;
+            border-radius: var(--radius-md);
+            padding: 8px 16px;
+            color: var(--text-primary);
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+        }
+
+        .input-action-btn:hover {
+            background: var(--border);
+        }
+
         .send-btn {
-            width: 52px;
-            height: 52px;
+            width: 56px; /* Увеличено с 52px */
+            height: 56px; /* Увеличено с 52px */
             border-radius: var(--radius-full);
             background: var(--accent);
             border: none;
             color: var(--bg-primary);
-            font-size: 18px;
+            font-size: 20px; /* Увеличено с 18px */
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -592,6 +677,48 @@
         .send-btn:disabled {
             opacity: 0.5;
             cursor: not-allowed;
+        }
+
+        /* Контекстное меню для сообщений */
+        .context-menu {
+            position: fixed;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow);
+            z-index: 1000;
+            min-width: 180px;
+            display: none;
+            animation: fadeIn 0.2s ease;
+            backdrop-filter: blur(10px);
+        }
+
+        .context-menu.active {
+            display: block;
+        }
+
+        .context-item {
+            padding: 12px 16px;
+            color: var(--text-primary);
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: background 0.2s;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .context-item:last-child {
+            border-bottom: none;
+        }
+
+        .context-item:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .context-item.danger {
+            color: var(--offline);
         }
 
         /* Модальные окна */
@@ -728,6 +855,16 @@
         .btn-secondary:hover {
             background: var(--bg-tertiary);
             border-color: var(--accent);
+        }
+
+        .btn-danger {
+            background: var(--offline);
+            color: white;
+        }
+
+        .btn-warning {
+            background: var(--warning);
+            color: white;
         }
 
         /* Профиль */
@@ -985,6 +1122,42 @@
             gap: 6px;
         }
 
+        /* Реакции */
+        .reactions-picker {
+            position: absolute;
+            bottom: 100%;
+            right: 0;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 12px;
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 8px;
+            z-index: 100;
+            box-shadow: var(--shadow);
+            display: none;
+        }
+
+        .reactions-picker.active {
+            display: grid;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .reaction-emoji {
+            font-size: 24px;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: var(--radius-md);
+            transition: all 0.2s;
+            text-align: center;
+        }
+
+        .reaction-emoji:hover {
+            background: var(--bg-tertiary);
+            transform: scale(1.2);
+        }
+
         /* Уведомления */
         .notification {
             position: fixed;
@@ -1011,7 +1184,7 @@
         }
 
         .notification.warning {
-            border-left-color: #ff9500;
+            border-left-color: var(--warning);
         }
 
         /* Пустые состояния */
@@ -1121,6 +1294,7 @@
         .mb-4 { margin-bottom: 16px; }
         .mb-5 { margin-bottom: 20px; }
         .hidden { display: none !important; }
+        .shake { animation: shake 0.5s; }
     </style>
 </head>
 <body>
@@ -1220,8 +1394,60 @@
                         <i class="fas fa-paper-plane"></i>
                     </button>
                 </form>
+                <div class="input-actions" id="inputActions">
+                    <button class="input-action-btn" onclick="attachFile()">
+                        <i class="fas fa-paperclip"></i> Файл
+                    </button>
+                    <button class="input-action-btn" onclick="attachPhoto()">
+                        <i class="fas fa-image"></i> Фото
+                    </button>
+                    <button class="input-action-btn" onclick="recordVoice()">
+                        <i class="fas fa-microphone"></i> Голосовое
+                    </button>
+                    <button class="input-action-btn" onclick="showEmojiPicker()">
+                        <i class="fas fa-smile"></i> Эмодзи
+                    </button>
+                </div>
             </div>
         </div>
+    </div>
+
+    <!-- Контекстное меню для сообщений -->
+    <div class="context-menu" id="contextMenu">
+        <div class="context-item" onclick="copyMessage()">
+            <i class="fas fa-copy"></i> Копировать
+        </div>
+        <div class="context-item" onclick="replyToMessage()">
+            <i class="fas fa-reply"></i> Ответить
+        </div>
+        <div class="context-item" onclick="forwardMessage()">
+            <i class="fas fa-share"></i> Переслать
+        </div>
+        <div class="context-item" onclick="editMessage()">
+            <i class="fas fa-edit"></i> Редактировать
+        </div>
+        <div class="context-item" onclick="reactToMessage()">
+            <i class="fas fa-smile"></i> Реакция
+        </div>
+        <div class="context-item danger" onclick="deleteMessage()">
+            <i class="fas fa-trash"></i> Удалить
+        </div>
+    </div>
+
+    <!-- Палитра реакций -->
+    <div class="reactions-picker" id="reactionsPicker">
+        <div class="reaction-emoji" onclick="addReaction('👍')">👍</div>
+        <div class="reaction-emoji" onclick="addReaction('❤️')">❤️</div>
+        <div class="reaction-emoji" onclick="addReaction('😂')">😂</div>
+        <div class="reaction-emoji" onclick="addReaction('😮')">😮</div>
+        <div class="reaction-emoji" onclick="addReaction('😢')">😢</div>
+        <div class="reaction-emoji" onclick="addReaction('😡')">😡</div>
+        <div class="reaction-emoji" onclick="addReaction('🔥')">🔥</div>
+        <div class="reaction-emoji" onclick="addReaction('⭐')">⭐</div>
+        <div class="reaction-emoji" onclick="addReaction('👏')">👏</div>
+        <div class="reaction-emoji" onclick="addReaction('🙏')">🙏</div>
+        <div class="reaction-emoji" onclick="addReaction('🎉')">🎉</div>
+        <div class="reaction-emoji" onclick="addReaction('💯')">💯</div>
     </div>
 
     <!-- Модальные окна -->
@@ -1376,6 +1602,16 @@
                         <span class="slider"></span>
                     </label>
                 </div>
+                <div class="settings-item">
+                    <div>
+                        <div class="settings-label">Скрыть прочитанные отметки</div>
+                        <div class="settings-description">Другие не увидят, что вы прочитали их сообщения</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="privacyReadReceipts">
+                        <span class="slider"></span>
+                    </label>
+                </div>
             </div>
 
             <div class="settings-section">
@@ -1410,6 +1646,49 @@
                         <span class="slider"></span>
                     </label>
                 </div>
+                <div class="settings-item">
+                    <div>
+                        <div class="settings-label">Показывать текст</div>
+                        <div class="settings-description">Показывать текст сообщений в уведомлениях</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="notifPreview" checked>
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3 class="settings-title">Данные и память</h3>
+                <div class="settings-item">
+                    <div>
+                        <div class="settings-label">Автосохранение медиа</div>
+                        <div class="settings-description">Автоматически сохранять фото и видео</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="autoSaveMedia">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="settings-item">
+                    <div>
+                        <div class="settings-label">Использовать меньше трафика</div>
+                        <div class="settings-description">Сжимать изображения перед отправкой</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="dataSaver">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="settings-item">
+                    <div>
+                        <div class="settings-label">Очистить кэш</div>
+                        <div class="settings-description">Удалить временные файлы</div>
+                    </div>
+                    <div class="settings-action" onclick="clearCache()">
+                        <i class="fas fa-trash"></i> Очистить
+                    </div>
+                </div>
             </div>
 
             <div class="support-section">
@@ -1422,15 +1701,52 @@
                 </button>
             </div>
 
-            <div class="settings-item">
-                <div>
-                    <div class="settings-label">Версия приложения</div>
-                    <div class="settings-description">DeepLink v1.0.0</div>
+            <div class="settings-section">
+                <h3 class="settings-title">О приложении</h3>
+                <div class="settings-item">
+                    <div>
+                        <div class="settings-label">Версия приложения</div>
+                        <div class="settings-description">DeepLink v1.2.0</div>
+                    </div>
+                    <div class="settings-action" onclick="showAbout()">
+                        <i class="fas fa-info-circle"></i> Подробнее
+                    </div>
                 </div>
-                <div class="settings-action" onclick="showAbout()">
-                    <i class="fas fa-info-circle"></i> О приложении
+                <div class="settings-item">
+                    <div>
+                        <div class="settings-label">Лицензионное соглашение</div>
+                        <div class="settings-description">Условия использования</div>
+                    </div>
+                    <div class="settings-action" onclick="showLicense()">
+                        <i class="fas fa-file-contract"></i> Просмотреть
+                    </div>
+                </div>
+                <div class="settings-item">
+                    <div>
+                        <div class="settings-label">Политика конфиденциальности</div>
+                        <div class="settings-description">Как мы используем ваши данные</div>
+                    </div>
+                    <div class="settings-action" onclick="showPrivacyPolicy()">
+                        <i class="fas fa-shield-alt"></i> Просмотреть
+                    </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Модалка удаления сообщения -->
+    <div class="modal-overlay" id="deleteModal">
+        <div class="modal">
+            <h2 class="modal-title">Удалить сообщение?</h2>
+            <p style="text-align: center; margin-bottom: 24px; color: var(--text-secondary);">
+                Это действие нельзя отменить. Сообщение будет удалено для всех участников чата.
+            </p>
+            <button class="btn btn-danger" onclick="confirmDeleteMessage()">
+                <i class="fas fa-trash"></i> Удалить
+            </button>
+            <button class="btn btn-secondary" onclick="closeDeleteModal()">
+                Отмена
+            </button>
         </div>
     </div>
 
@@ -1446,11 +1762,15 @@
         let typingTimeout = null;
         let isMobile = window.innerWidth <= 768;
         let chatsCache = [];
+        let selectedMessage = null;
+        let messagesCache = new Map(); // Кэш сообщений по chat_id
+        let messageIds = new Set(); // Для отслеживания дубликатов
 
         // Инициализация
         document.addEventListener('DOMContentLoaded', () => {
             checkAuth();
             setupResponsive();
+            setupContextMenu();
         });
 
         // Проверка авторизации
@@ -1491,11 +1811,38 @@
             
             socket.on('new_message', (message) => {
                 console.log('📨 Новое сообщение:', message);
-                if (currentChat && message.chat_id === currentChat.id) {
-                    addMessage(message, message.sender === currentUser.username);
-                    scrollToBottom();
+                // Проверяем, нет ли уже такого сообщения
+                if (!messageIds.has(message.id)) {
+                    messageIds.add(message.id);
+                    
+                    if (currentChat && message.chat_id === currentChat.id) {
+                        addMessage(message, message.sender === currentUser.username);
+                        scrollToBottom();
+                    }
+                    loadChats(); // Обновляем список чатов
                 }
-                loadChats(); // Обновляем список чатов
+            });
+            
+            socket.on('message_deleted', (data) => {
+                console.log('🗑️ Сообщение удалено:', data);
+                if (currentChat && data.chat_id === currentChat.id) {
+                    removeMessage(data.message_id);
+                }
+                loadChats();
+            });
+            
+            socket.on('message_reaction', (data) => {
+                console.log('😄 Реакция на сообщение:', data);
+                if (currentChat && data.chat_id === currentChat.id) {
+                    updateMessageReaction(data.message_id, data.reactions);
+                }
+            });
+            
+            socket.on('message_edited', (data) => {
+                console.log('✏️ Сообщение отредактировано:', data);
+                if (currentChat && data.chat_id === currentChat.id) {
+                    updateMessageContent(data.message_id, data.content, data.edited_at);
+                }
             });
             
             socket.on('user_typing', (data) => {
@@ -1514,6 +1861,65 @@
                 console.log('🔴 Пользователь оффлайн:', data.username);
                 updateUserStatus(data.username, false);
             });
+        }
+
+        // Настройка контекстного меню
+        function setupContextMenu() {
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('.context-menu')) {
+                    hideContextMenu();
+                    hideReactionsPicker();
+                }
+            });
+            
+            // Открытие контекстного меню по долгому нажатию на сообщение
+            const messagesContainer = document.getElementById('messagesContainer');
+            messagesContainer.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                const messageElement = e.target.closest('.message');
+                if (messageElement) {
+                    const messageId = messageElement.dataset.messageId;
+                    selectedMessage = messageId;
+                    showContextMenu(e.clientX, e.clientY);
+                }
+            });
+            
+            // Открытие контекстного меню по клику на сообщение
+            messagesContainer.addEventListener('click', (e) => {
+                if (e.target.closest('.message-content')) {
+                    const messageElement = e.target.closest('.message');
+                    if (messageElement) {
+                        messageElement.classList.toggle('selected');
+                    }
+                }
+            });
+        }
+
+        // Показать контекстное меню
+        function showContextMenu(x, y) {
+            const menu = document.getElementById('contextMenu');
+            menu.style.left = x + 'px';
+            menu.style.top = y + 'px';
+            menu.classList.add('active');
+        }
+
+        // Скрыть контекстное меню
+        function hideContextMenu() {
+            document.getElementById('contextMenu').classList.remove('active');
+            selectedMessage = null;
+        }
+
+        // Показать палитру реакций
+        function showReactionsPicker(x, y) {
+            const picker = document.getElementById('reactionsPicker');
+            picker.style.left = x + 'px';
+            picker.style.bottom = (window.innerHeight - y) + 'px';
+            picker.classList.add('active');
+        }
+
+        // Скрыть палитру реакций
+        function hideReactionsPicker() {
+            document.getElementById('reactionsPicker').classList.remove('active');
         }
 
         // Обновление информации о пользователе
@@ -1587,7 +1993,7 @@
             }
         }
 
-        // Открытие чата
+        // Открытие чата - ИСПРАВЛЕНО ДУБЛИРОВАНИЕ
         async function openChat(chatId) {
             try {
                 // Находим чат в кэше
@@ -1598,6 +2004,7 @@
                 }
                 
                 currentChat = chat;
+                messageIds.clear(); // Очищаем список ID сообщений при смене чата
                 
                 // Обновляем заголовок чата
                 const displayName = chat.display_name || chat.name;
@@ -1630,6 +2037,9 @@
                 
                 const messages = await messagesResponse.json();
                 
+                // Сохраняем в кэш
+                messagesCache.set(chatId, messages);
+                
                 // Отображаем сообщения
                 const container = document.getElementById('messagesContainer');
                 container.innerHTML = '';
@@ -1647,7 +2057,9 @@
                         </div>
                     `;
                 } else {
+                    // Добавляем все сообщения и собираем их ID
                     messages.forEach(msg => {
+                        messageIds.add(msg.id);
                         addMessage(msg, msg.sender === currentUser.username);
                     });
                     scrollToBottom();
@@ -1687,24 +2099,134 @@
                 container.innerHTML = '';
             }
             
+            // Проверяем, нет ли уже такого сообщения
+            if (container.querySelector(`[data-message-id="${message.id}"]`)) {
+                return; // Сообщение уже есть, не добавляем дубликат
+            }
+            
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isOutgoing ? 'outgoing' : 'incoming'}`;
+            messageDiv.dataset.messageId = message.id;
             
             const time = formatTime(message.timestamp);
             const content = escapeHtml(message.content);
+            const edited = message.edited ? '<span class="message-edited">(изменено)</span>' : '';
+            
+            // Добавляем реакции если есть
+            let reactionsHtml = '';
+            if (message.reactions && Object.keys(message.reactions).length > 0) {
+                const reactions = message.reactions;
+                const reactionCounts = {};
+                
+                // Группируем реакции по эмодзи
+                Object.values(reactions).forEach(emoji => {
+                    reactionCounts[emoji] = (reactionCounts[emoji] || 0) + 1;
+                });
+                
+                reactionsHtml = `<div class="message-reactions">${Object.entries(reactionCounts).map(([emoji, count]) => `
+                    <div class="reaction" onclick="toggleReaction('${message.id}', '${emoji}')">
+                        <span class="reaction-emoji">${emoji}</span>
+                        <span class="reaction-count">${count}</span>
+                    </div>
+                `).join('')}</div>`;
+            }
             
             messageDiv.innerHTML = `
                 <div class="message-content">${content}</div>
                 <div class="message-time">
                     ${time}
                     ${isOutgoing ? '<span class="message-status">✓</span>' : ''}
+                    ${edited}
                 </div>
+                ${reactionsHtml}
             `;
             
             container.appendChild(messageDiv);
         }
 
-        // Отправка сообщения
+        // Удаление сообщения из интерфейса
+        function removeMessage(messageId) {
+            const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+            if (messageElement) {
+                messageElement.classList.add('shake');
+                setTimeout(() => {
+                    messageElement.remove();
+                    
+                    // Проверяем, остались ли сообщения
+                    const container = document.getElementById('messagesContainer');
+                    if (container.children.length === 0) {
+                        container.innerHTML = `
+                            <div class="empty-state">
+                                <div class="empty-icon">
+                                    <i class="fas fa-comment-slash"></i>
+                                </div>
+                                <div class="empty-title">Нет сообщений</div>
+                                <div class="empty-subtitle">
+                                    Начните общение первым! Напишите что-нибудь приветственное
+                                </div>
+                            </div>
+                        `;
+                    }
+                }, 500);
+            }
+        }
+
+        // Обновление реакции на сообщение
+        function updateMessageReaction(messageId, reactions) {
+            const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+            if (messageElement) {
+                const reactionCounts = {};
+                
+                // Группируем реакции по эмодзи
+                Object.values(reactions || {}).forEach(emoji => {
+                    reactionCounts[emoji] = (reactionCounts[emoji] || 0) + 1;
+                });
+                
+                let reactionsHtml = '';
+                if (Object.keys(reactionCounts).length > 0) {
+                    reactionsHtml = `<div class="message-reactions">${Object.entries(reactionCounts).map(([emoji, count]) => `
+                        <div class="reaction" onclick="toggleReaction('${messageId}', '${emoji}')">
+                            <span class="reaction-emoji">${emoji}</span>
+                            <span class="reaction-count">${count}</span>
+                        </div>
+                    `).join('')}</div>`;
+                }
+                
+                // Находим или создаем блок реакций
+                let reactionsBlock = messageElement.querySelector('.message-reactions');
+                if (reactionsBlock) {
+                    if (reactionsHtml) {
+                        reactionsBlock.innerHTML = reactionsHtml;
+                    } else {
+                        reactionsBlock.remove();
+                    }
+                } else if (reactionsHtml) {
+                    const messageTime = messageElement.querySelector('.message-time');
+                    if (messageTime) {
+                        messageTime.insertAdjacentHTML('afterend', reactionsHtml);
+                    }
+                }
+            }
+        }
+
+        // Обновление содержимого сообщения
+        function updateMessageContent(messageId, newContent, editedAt) {
+            const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+            if (messageElement) {
+                const contentElement = messageElement.querySelector('.message-content');
+                if (contentElement) {
+                    contentElement.textContent = newContent;
+                    
+                    // Обновляем время редактирования
+                    const timeElement = messageElement.querySelector('.message-time');
+                    if (timeElement && !timeElement.querySelector('.message-edited')) {
+                        timeElement.innerHTML += '<span class="message-edited">(изменено)</span>';
+                    }
+                }
+            }
+        }
+
+        // Отправка сообщения - ИСПРАВЛЕНО ДУБЛИРОВАНИЕ
         async function sendMessage(e) {
             e.preventDefault();
             
@@ -1719,19 +2241,6 @@
                     sender: currentUser.username,
                     content: content
                 });
-                
-                // Добавляем сообщение локально
-                const tempMessage = {
-                    id: 'temp_' + Date.now(),
-                    chat_id: currentChat.id,
-                    sender: currentUser.username,
-                    content: content,
-                    timestamp: new Date().toISOString(),
-                    read: false
-                };
-                
-                addMessage(tempMessage, true);
-                scrollToBottom();
                 
                 // Очищаем поле ввода
                 input.value = '';
@@ -1754,7 +2263,7 @@
         function handleTyping(input) {
             // Автоматическое изменение высоты
             input.style.height = 'auto';
-            input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+            input.style.height = Math.min(input.scrollHeight, 150) + 'px';
             
             // Отправляем индикатор набора
             if (!currentChat || !currentUser) return;
@@ -1790,6 +2299,142 @@
             indicator.timeout = setTimeout(() => {
                 indicator.innerHTML = '';
             }, 3000);
+        }
+
+        // Функции для контекстного меню
+
+        // Копировать сообщение
+        function copyMessage() {
+            if (!selectedMessage) return;
+            
+            const messageElement = document.querySelector(`[data-message-id="${selectedMessage}"]`);
+            if (messageElement) {
+                const content = messageElement.querySelector('.message-content').textContent;
+                navigator.clipboard.writeText(content).then(() => {
+                    showNotification('Сообщение скопировано', 'success');
+                });
+            }
+            hideContextMenu();
+        }
+
+        // Ответить на сообщение
+        function replyToMessage() {
+            if (!selectedMessage) return;
+            
+            const messageElement = document.querySelector(`[data-message-id="${selectedMessage}"]`);
+            if (messageElement) {
+                const content = messageElement.querySelector('.message-content').textContent;
+                const input = document.getElementById('messageInput');
+                input.value = `Ответ на: "${content.substring(0, 50)}..." `;
+                input.focus();
+                showNotification('Можете написать ответ', 'info');
+            }
+            hideContextMenu();
+        }
+
+        // Переслать сообщение
+        function forwardMessage() {
+            if (!selectedMessage) return;
+            
+            showNotification('Выберите чат для пересылки', 'info');
+            // Здесь можно открыть модалку с выбором чата
+            hideContextMenu();
+        }
+
+        // Редактировать сообщение
+        function editMessage() {
+            if (!selectedMessage) return;
+            
+            const messageElement = document.querySelector(`[data-message-id="${selectedMessage}"]`);
+            if (messageElement) {
+                const currentContent = messageElement.querySelector('.message-content').textContent;
+                const newContent = prompt('Редактировать сообщение:', currentContent);
+                if (newContent && newContent.trim() !== currentContent) {
+                    socket.emit('edit_message', {
+                        message_id: selectedMessage,
+                        chat_id: currentChat.id,
+                        username: currentUser.username,
+                        content: newContent.trim()
+                    });
+                }
+            }
+            hideContextMenu();
+        }
+
+        // Реакция на сообщение
+        function reactToMessage() {
+            if (!selectedMessage) return;
+            
+            const messageElement = document.querySelector(`[data-message-id="${selectedMessage}"]`);
+            if (messageElement) {
+                const rect = messageElement.getBoundingClientRect();
+                showReactionsPicker(rect.right, rect.top);
+            }
+        }
+
+        // Добавить реакцию
+        function addReaction(emoji) {
+            if (!selectedMessage || !currentChat) return;
+            
+            fetch('/api/message/react', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message_id: selectedMessage,
+                    username: currentUser.username,
+                    reaction: emoji
+                })
+            });
+            
+            hideReactionsPicker();
+            hideContextMenu();
+        }
+
+        // Переключить реакцию
+        function toggleReaction(messageId, emoji) {
+            selectedMessage = messageId;
+            addReaction(emoji);
+        }
+
+        // Удалить сообщение
+        function deleteMessage() {
+            if (!selectedMessage) return;
+            
+            showDeleteModal();
+            hideContextMenu();
+        }
+
+        // Показать модалку удаления
+        function showDeleteModal() {
+            document.getElementById('deleteModal').classList.add('active');
+        }
+
+        // Скрыть модалку удаления
+        function closeDeleteModal() {
+            document.getElementById('deleteModal').classList.remove('active');
+        }
+
+        // Подтвердить удаление сообщения
+        function confirmDeleteMessage() {
+            if (!selectedMessage || !currentUser) return;
+            
+            fetch('/api/message/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message_id: selectedMessage,
+                    username: currentUser.username
+                })
+            }).then(response => response.json())
+              .then(data => {
+                  if (data.success) {
+                      showNotification('Сообщение удалено', 'success');
+                  } else {
+                      showNotification(data.error || 'Ошибка удаления', 'error');
+                  }
+              });
+            
+            closeDeleteModal();
         }
 
         // Поиск чатов
@@ -2112,9 +2757,13 @@
             // Заполняем настройки
             document.getElementById('privacyOnline').checked = true;
             document.getElementById('privacyChats').checked = true;
+            document.getElementById('privacyReadReceipts').checked = false;
             document.getElementById('notifEnabled').checked = true;
             document.getElementById('notifSound').checked = true;
             document.getElementById('notifVibrate').checked = true;
+            document.getElementById('notifPreview').checked = true;
+            document.getElementById('autoSaveMedia').checked = false;
+            document.getElementById('dataSaver').checked = false;
         }
         
         function closeSettings() {
@@ -2127,6 +2776,7 @@
             document.getElementById('newChatModal').classList.remove('active');
             document.getElementById('profileModal').classList.remove('active');
             document.getElementById('settingsModal').classList.remove('active');
+            document.getElementById('deleteModal').classList.remove('active');
         }
 
         // Назад к списку чатов
@@ -2147,6 +2797,8 @@
             currentUser = null;
             currentChat = null;
             localStorage.removeItem('deeplink_user');
+            messagesCache.clear();
+            messageIds.clear();
             
             // Сбрасываем интерфейс
             document.getElementById('chatsList').innerHTML = '';
@@ -2174,6 +2826,14 @@
             showNotification('Спасибо за поддержку! 💝', 'success');
         }
 
+        // Очистка кэша
+        function clearCache() {
+            localStorage.removeItem('deeplink_user');
+            messagesCache.clear();
+            messageIds.clear();
+            showNotification('Кэш очищен', 'success');
+        }
+
         // Информация о чате
         function openChatInfo() {
             if (!currentChat) return;
@@ -2188,7 +2848,36 @@
 
         // О приложении
         function showAbout() {
-            showNotification('DeepLink v1.0.0 • Разработчик: @Nether_phone', 'info');
+            showNotification('DeepLink v1.2.0 • Разработчик: @Nether_phone', 'info');
+        }
+
+        // Лицензионное соглашение
+        function showLicense() {
+            showNotification('Лицензионное соглашение откроется в новой вкладке', 'info');
+            window.open('https://example.com/license', '_blank');
+        }
+
+        // Политика конфиденциальности
+        function showPrivacyPolicy() {
+            showNotification('Политика конфиденциальности откроется в новой вкладке', 'info');
+            window.open('https://example.com/privacy', '_blank');
+        }
+
+        // Дополнительные функции ввода
+        function attachFile() {
+            showNotification('Функция добавления файла в разработке', 'info');
+        }
+
+        function attachPhoto() {
+            showNotification('Функция добавления фото в разработке', 'info');
+        }
+
+        function recordVoice() {
+            showNotification('Функция записи голоса в разработке', 'info');
+        }
+
+        function showEmojiPicker() {
+            showNotification('Функция выбора эмодзи в разработке', 'info');
         }
 
         // Уведомления
@@ -2302,7 +2991,6 @@
         // Предотвращение выхода из страницы
         window.addEventListener('beforeunload', (e) => {
             if (currentUser) {
-                // Сохраняем состояние
                 localStorage.setItem('deeplink_user', JSON.stringify(currentUser));
             }
         });
